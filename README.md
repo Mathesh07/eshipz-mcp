@@ -69,25 +69,11 @@ After configuring the server and restarting Claude Desktop, you can ask Claude t
 - "Track package <your tracking id>"
 - "What's the status of tracking number ABC123?"
 - "Check delivery status for tracking XYZ789"
+- "Analyze the carrier performance"
+- "Create new shipment with valid values for all required fields"
+- "Pre Docket Allocation" 
 
-## Output Format
-
-The server provides status-aware formatting:
-
-- ✅ **Delivered**: Shows delivery date and location
-- 🚚 **Out for Delivery**: Current facility location
-- 📦 **In Transit**: Current location, latest update, and ETA
-- ⚠️ **Exception**: Issue details and location
-- 📭 **Picked Up**: Origin location
-- ℹ️ **Info Received**: Shipment information received
-
-Example output:
-```
-📦 In transit via DHL, currently in Mumbai - Shipment in transit
-   Expected delivery: 2026-02-05
-   Last updated: 2026-01-30 14:23:00
-   Total events: 8
-```
+Note: for the required fields for all features refer to the API docs of eShipz
 
 ## Development
 

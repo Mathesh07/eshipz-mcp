@@ -16,9 +16,10 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://app.eshipz.com")
 ESHIPZ_API_TRACKING_URL = f"{API_BASE_URL}/api/v2/trackings"
 ESHIPZ_TOKEN = os.getenv("ESHIPZ_TOKEN", "")
 ESHIPZ_CARRIER_PERFORMANCE_URL = "https://ds.eshipz.com/performance_score/cps_scores/v2/"
+ESHIPZ_API_CREATE_SHIPMENT_URL = f"{API_BASE_URL}/api/v1/create-shipments"
+ESHIPZ_API_DOCKET_ALLOCATION_URL = f"{API_BASE_URL}/api/v1/docket-allocation"
 
-# 
-async def make_nws_request(tracking_number: str) -> dict[str, Any] | None:
+async def get_tracking_details(tracking_number: str) -> dict[str, Any] | None:
     headers = {
         "Content-Type": "application/json",
         "X-API-TOKEN": ESHIPZ_TOKEN
@@ -56,6 +57,45 @@ async def make_carrier_performance_request(source_pin: str, destination_pin: str
             return response.json()
         except Exception as e:
             print(f"Error in carrier performance request: {str(e)}")
+            return None
+
+async def make_create_shipment_request(shipment_data: dict) -> dict[str, Any] | None:
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-TOKEN": ESHIPZ_TOKEN
+    }
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                ESHIPZ_API_CREATE_SHIPMENT_URL,
+                headers=headers,
+                json=shipment_data,
+                timeout=30.0
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Error in create shipment request: {str(e)}")
+            return None
+
+
+async def make_docket_allocation_request(allocation_data: dict) -> dict[str, Any] | None:
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-TOKEN": ESHIPZ_TOKEN
+    }
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                ESHIPZ_API_DOCKET_ALLOCATION_URL,
+                headers=headers,
+                json=allocation_data,
+                timeout=30.0
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Error in docket allocation request: {str(e)}")
             return None
 
 
@@ -230,19 +270,156 @@ def _format_carrier_performance(data: dict) -> str:
     
     return summary
 
+def _format_shipment_creation_response(data: dict) -> str:
+    """Format shipment creation response into human-readable summary"""
+    
+    if not data:
+        return "Failed to create shipment - No response from API"
+    
+    # Check meta for errors
+    meta = data.get("meta", {})
+    if meta.get("code") != 200:
+        error_msg = meta.get("message") or "Unknown error"
+        details = meta.get("details", [])
+        if details:
+            error_msg += f": {', '.join(details)}"
+        return f"Shipment creation failed: {error_msg}"
+    
+    # Extract shipment data
+    shipment_data = data.get("data", {})
+    
+    if not shipment_data:
+        return "No shipment data in response"
+    
+    summary = "SHIPMENT CREATED SUCCESSFULLY\n"
+    summary += f"{'-' * 60}\n"
+    
+    # Order and tracking info
+    order_id = shipment_data.get("order_id")
+    tracking_numbers = shipment_data.get("tracking_numbers", [])
+    carrier = shipment_data.get("slug")
+    status = shipment_data.get("status")
+    customer_ref = shipment_data.get("customer_reference")
+    
+    if order_id:
+        summary += f"Order ID: {order_id}\n"
+    
+    if tracking_numbers:
+        if len(tracking_numbers) == 1:
+            summary += f"Tracking Number: {tracking_numbers[0]}\n"
+        else:
+            summary += f"Tracking Numbers ({len(tracking_numbers)} boxes):\n"
+            for idx, tn in enumerate(tracking_numbers, 1):
+                summary += f"   Box {idx}: {tn}\n"
+    
+    if carrier:
+        summary += f"Carrier: {_format_carrier(carrier)}\n"
+    
+    if status:
+        summary += f"Status: {status.upper()}\n"
+    
+    if customer_ref:
+        summary += f"Reference: {customer_ref}\n"
+    
+    # Rate and weight info
+    rate = shipment_data.get("rate", {})
+    charge_weight = rate.get("charge_weight", {})
+    if charge_weight.get("value"):
+        summary += f"Chargeable Weight: {charge_weight['value']} {charge_weight.get('unit', 'kg')}\n"
+    
+    total_charge = rate.get("total_charge", {})
+    if total_charge.get("amount"):
+        summary += f"Total Charge: {total_charge.get('currency', 'INR')} {total_charge['amount']}\n"
+    
+    # Delivery and transit info
+    if rate.get("delivery_date"):
+        summary += f"Expected Delivery: {rate['delivery_date']}\n"
+    
+    if rate.get("transit_time"):
+        summary += f"Transit Time: {rate['transit_time']}\n"
+    
+    # Label download link
+    files = shipment_data.get("files", {})
+    label = files.get("label", {})
+    label_url = label.get("label_meta", {}).get("url")
+    if label_url:
+        summary += f"\nShipping Label: {label_url}\n"
+    
+    # Tracking link
+    tracking_link = shipment_data.get("tracking_link")
+    if tracking_link:
+        summary += f"Track Online: {tracking_link}\n"
+    
+    # Timestamps
+    created_at = shipment_data.get("created_at")
+    if created_at:
+        summary += f"\nCreated: {created_at}\n"
+    
+    return summary
+
+
+def _format_docket_allocation_response(data: dict) -> str:
+    """Format docket allocation response into human-readable summary"""
+    
+    if not data:
+        return "Failed to allocate docket - No response from API"
+    
+    if isinstance(data, dict):
+        # Check for errors
+        if data.get("status") == "error" or data.get("error"):
+            error_msg = data.get("message") or data.get("error") or "Unknown error"
+            return f"Docket allocation failed: {error_msg}"
+        
+        # Extract allocation details
+        summary = "DOCKET ALLOCATED SUCCESSFULLY\n"
+        summary += f"{'-' * 60}\n"
+        
+        # Main docket/AWB number
+        docket_number = data.get("docket_number") or data.get("awb_number")
+        if docket_number:
+            summary += f"Docket/AWB Number: {docket_number}\n"
+        
+        # Carrier info
+        carrier = data.get("carrier_id") or data.get("carrier")
+        if carrier:
+            summary += f"Carrier: {_format_carrier(carrier)}\n"
+        
+        # Route info
+        if data.get("pickup_pincode"):
+            summary += f"Pickup PIN: {data['pickup_pincode']}\n"
+        if data.get("delivery_pincode"):
+            summary += f"Delivery PIN: {data['delivery_pincode']}\n"
+        
+        # Order reference
+        if data.get("order_reference"):
+            summary += f"Order Reference: {data['order_reference']}\n"
+        
+        # Box series (if multiple boxes)
+        box_series = data.get("box_series") or data.get("package_numbers")
+        if box_series:
+            if isinstance(box_series, list) and len(box_series) > 1:
+                summary += f"\nBox Series ({len(box_series)} boxes):\n"
+                for idx, box_num in enumerate(box_series, 1):
+                    summary += f"   Box {idx}: {box_num}\n"
+            elif isinstance(box_series, list) and len(box_series) == 1:
+                summary += f"Box Number: {box_series[0]}\n"
+        
+        # Additional info
+        if data.get("ship_mode"):
+            summary += f"Ship Mode: {data['ship_mode'].upper()}\n"
+        if data.get("payment_mode"):
+            summary += f"Payment Mode: {data['payment_mode'].upper()}\n"
+        
+        return summary
+    
+    return str(data)
+
+
 
 @mcp.tool()
 async def get_tracking(tracking_number: str) -> str:
-    """Get tracking information for a shipment
     
-    Args:
-        tracking_number: The tracking number of the shipment (e.g., "ES123456789")
-    
-    Returns:
-        Formatted tracking summary including status, location, and timestamps.
-    """
-    
-    data = await make_nws_request(tracking_number) #invoking the function to perform the api call
+    data = await get_tracking_details(tracking_number) #invoking the function to perform the api call
     
     if not data:
         return " Tracking information could not be retrieved. Please verify the tracking number."
@@ -276,21 +453,7 @@ async def get_tracking(tracking_number: str) -> str:
     
 @mcp.tool()
 async def get_carrier_performance(source_pin: str, destination_pin: str) -> str:
-    """Get carrier performance analysis for a specific route
     
-    Analyzes and compares carrier performance between two locations based on
-    historical delivery data, on-time rates, and transit times.
-    
-    Args:
-        source_pin: Source PIN/postal code (e.g., "421302")
-        destination_pin: Destination PIN/postal code (e.g., "560102")
-        
-    Returns:
-        Formatted carrier performance comparison with scores and recommendations
-        
-    Example:
-        get_carrier_performance("421302", "560102")
-    """
     data = await make_carrier_performance_request(source_pin, destination_pin) # invoking the function to perform the api call
     
     if not data:
@@ -302,6 +465,235 @@ async def get_carrier_performance(source_pin: str, destination_pin: str) -> str:
     
     except Exception as e:
         return f" Error processing carrier performance data: {str(e)}"
+
+
+@mcp.tool()
+async def allocate_docket(
+    carrier_id: str,
+    ship_mode: str,
+    pickup_pincode: str,
+    delivery_pincode: str,
+    payment_mode: str,
+    order_reference: str = "",
+    box_count: int = 1,
+    return_box_series: bool = True
+) -> str:
+    
+    
+    allocation_data = {
+        "carrier_id": carrier_id,
+        "ship_mode": ship_mode,
+        "pickup_pincode": pickup_pincode,
+        "delivery_pincode": delivery_pincode,
+        "payment_mode": payment_mode,
+        "box_count": box_count,
+        "return_box_series": return_box_series,
+        "package_number_fetch": False,  
+        "generate_sticker": False,       
+    }
+    
+    if order_reference:
+        allocation_data["order_reference"] = order_reference
+    
+    data = await make_docket_allocation_request(allocation_data)
+    
+    if not data:
+        return "Docket allocation failed. Please check carrier_id and PIN codes."
+    
+    try:
+        summary = _format_docket_allocation_response(data)
+        return summary
+    
+    except Exception as e:
+        return f"Error processing docket allocation: {str(e)}"
+
+
+@mcp.tool()
+async def create_shipment(
+    carrier_slug: str,
+    service_type: str,
+    customer_reference: str,
+    # Shipper details
+    ship_from_name: str,
+    ship_from_company: str,
+    ship_from_street1: str,
+    ship_from_city: str,
+    ship_from_state: str,
+    ship_from_pincode: str,
+    ship_from_phone: str,
+    ship_from_email: str,
+    # Consignee details
+    ship_to_name: str,
+    ship_to_company: str,
+    ship_to_street1: str,
+    ship_to_city: str,
+    ship_to_state: str,
+    ship_to_pincode: str,
+    ship_to_phone: str,
+    # Parcel details
+    parcel_description: str,
+    parcel_weight_kg: float,
+    parcel_length_cm: float,
+    parcel_width_cm: float,
+    parcel_height_cm: float,
+    # Item details
+    item_description: str,
+    item_quantity: int,
+    item_price: float,
+    # Optional fields
+    ship_from_street2: str = "",
+    ship_to_street2: str = "",
+    ship_to_email: str = "",
+    is_cod: bool = False,
+    cod_amount: float = 0.0,
+    invoice_number: str = "",
+    invoice_date: str = "",
+    is_document: bool = False,
+    vendor_id: str = "",
+    ship_from_gstin: str = "",
+    item_hsn_code: str = "",
+    item_sku: str = ""
+) -> str:
+    
+    # Build shipment data structure
+    shipment_data = {
+        "billing": {
+            "paid_by": "shipper"
+        },
+        "slug": carrier_slug,
+        "service_type": service_type,
+        "customer_reference": customer_reference,
+        "purpose": "commercial",
+        "order_source": "api",
+        "parcel_contents": parcel_description,
+        "is_document": is_document,
+        "is_cod": is_cod,
+        "collect_on_delivery": {
+            "amount": cod_amount if is_cod else 0,
+            "currency": "INR"
+        },
+        "charged_weight": {
+            "unit": "kg",
+            "value": parcel_weight_kg
+        },
+        "shipment": {
+            "ship_from": {
+                "contact_name": ship_from_name,
+                "company_name": ship_from_company,
+                "street1": ship_from_street1,
+                "street2": ship_from_street2,
+                "city": ship_from_city,
+                "state": ship_from_state,
+                "postal_code": ship_from_pincode,
+                "phone": ship_from_phone,
+                "email": ship_from_email,
+                "country": "IN",
+                "type": "business" if ship_from_company else "residential"
+            },
+            "ship_to": {
+                "contact_name": ship_to_name,
+                "company_name": ship_to_company,
+                "street1": ship_to_street1,
+                "street2": ship_to_street2,
+                "city": ship_to_city,
+                "state": ship_to_state,
+                "postal_code": ship_to_pincode,
+                "phone": ship_to_phone,
+                "email": ship_to_email if ship_to_email else ship_from_email,
+                "country": "IN",
+                "type": "business" if ship_to_company else "residential"
+            },
+            "return_to": {
+                "contact_name": ship_from_name,
+                "company_name": ship_from_company,
+                "street1": ship_from_street1,
+                "street2": ship_from_street2,
+                "city": ship_from_city,
+                "state": ship_from_state,
+                "postal_code": ship_from_pincode,
+                "phone": ship_from_phone,
+                "email": ship_from_email,
+                "country": "IN",
+                "type": "business" if ship_from_company else "residential"
+            },
+            "is_reverse": False,
+            "is_to_pay": False,
+            "parcels": [
+                {
+                    "description": parcel_description,
+                    "box_type": "custom",
+                    "quantity": 1,
+                    "weight": {
+                        "value": parcel_weight_kg,
+                        "unit": "kg"
+                    },
+                    "dimension": {
+                        "width": parcel_width_cm,
+                        "height": parcel_height_cm,
+                        "length": parcel_length_cm,
+                        "unit": "cm"
+                    },
+                    "items": [
+                        {
+                            "description": item_description,
+                            "origin_country": "IN",
+                            "sku": item_sku,
+                            "hs_code": item_hsn_code,
+                            "quantity": item_quantity,
+                            "price": {
+                                "amount": item_price,
+                                "currency": "INR"
+                            },
+                            "weight": {
+                                "value": parcel_weight_kg,
+                                "unit": "kg"
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        "gst_invoices": []
+    }
+    
+    # Add optional fields
+    if vendor_id:
+        shipment_data["vendor_id"] = vendor_id
+    
+    if invoice_number:
+        shipment_data["invoice_number"] = invoice_number
+    
+    if invoice_date:
+        shipment_data["invoice_date"] = invoice_date
+    
+    if ship_from_gstin:
+        shipment_data["shipment"]["ship_from"]["tax_id"] = ship_from_gstin
+        shipment_data["shipment"]["return_to"]["tax_id"] = ship_from_gstin
+    
+    # Add GST invoice if details provided
+    if invoice_number and invoice_date:
+        total_value = item_price * item_quantity
+        shipment_data["gst_invoices"] = [
+            {
+                "invoice_number": invoice_number,
+                "invoice_date": invoice_date,
+                "invoice_value": total_value,
+                "ewaybill_number": "",
+                "ewaybill_date": ""
+            }
+        ]
+    
+    data = await make_create_shipment_request(shipment_data)
+    
+    if not data:
+        return "Shipment creation failed. Please check all details and try again."
+    
+    try:
+        summary = _format_shipment_creation_response(data)
+        return summary
+    
+    except Exception as e:
+        return f"Error processing shipment creation: {str(e)}"
 
 
 if __name__ == "__main__":
