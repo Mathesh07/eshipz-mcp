@@ -697,4 +697,11 @@ async def create_shipment(
 
 
 if __name__ == "__main__":
-    mcp.run(transport='stdio')
+    import sys
+    
+    # Check if running with SSE transport (for remote server)
+    if "--sse" in sys.argv or os.getenv("USE_SSE", "false").lower() == "true":
+        mcp.run(transport='sse')
+    else:
+        # Default to stdio for local use
+        mcp.run(transport='stdio')
