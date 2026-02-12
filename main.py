@@ -692,7 +692,7 @@ async def create_shipment(
         summary = _format_shipment_creation_response(data)
         return summary
     
-    except Exception as e:
+    except Exception as e: 
         return f"Error processing shipment creation: {str(e)}"
 
 
