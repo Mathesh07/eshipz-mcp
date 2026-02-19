@@ -560,11 +560,11 @@ async def create_shipment(
         "billing": {
             "paid_by": "shipper"
         },
-        "slug": carrier_slug,
-        "service_type": service_type,
+        "slug": None,
+        "service_type": None,
         "customer_reference": customer_reference,
         "purpose": "commercial",
-        "order_source": "api",
+        "order_source": "mcp_api",
         "parcel_contents": parcel_description,
         "is_document": is_document,
         "is_cod": is_cod,
@@ -701,16 +701,10 @@ if __name__ == "__main__":
     import uvicorn
 
     if "--sse" in sys.argv or os.getenv("USE_SSE", "false").lower() == "true":
-        # Get port from Render environment
-        port = int(os.getenv("PORT", 10000))
-        
-        # Create MCP SSE app and run with uvicorn
-        app = mcp._create_sse_app()
-        uvicorn.run(
-            app,
-            host="0.0.0.0",
-            port=port,
-            log_level="info"
-        )
+        # FastMCP reads HOST and PORT from environment
+        os.environ.setdefault("HOST", "0.0.0.0")
+        if not os.getenv("PORT"):
+            os.environ["PORT"] = "10000"
+        mcp.run(transport="sse")
     else:
         mcp.run(transport="stdio")
