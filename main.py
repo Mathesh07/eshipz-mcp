@@ -3,7 +3,9 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 from dotenv import load_dotenv
-import os 
+import os
+import re
+from datetime import datetime 
 
 # Load environment variables
 load_dotenv()
@@ -16,8 +18,238 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://app.eshipz.com")
 ESHIPZ_API_TRACKING_URL = f"{API_BASE_URL}/api/v2/trackings"
 ESHIPZ_TOKEN = os.getenv("ESHIPZ_TOKEN", "")
 ESHIPZ_CARRIER_PERFORMANCE_URL = "https://ds.eshipz.com/performance_score/cps_scores/v2/"
-ESHIPZ_API_CREATE_SHIPMENT_URL = f"{API_BASE_URL}/api/v1/create-shipments"
+ESHIPZ_API_CREATE_SHIPMENT_URL = f"{API_BASE_URL}/api/v1/create-shipments/rule-based"
 ESHIPZ_API_DOCKET_ALLOCATION_URL = f"{API_BASE_URL}/api/v1/docket-allocation"
+ESHIPZ_API_ORDERS_URL = "https://orders.eshipz.com/api/v1/orders"
+
+# Map common natural language descriptions to exact eShipz API slugs
+CARRIER_SLUG_MAP = {
+    "bluedart": "bluedart",
+    "blue dart": "bluedart",
+    "delhivery": "delhivery",
+    "delhivery surface": "delhivery-surface",
+    "dtdc": "dtdc",
+    "ekart": "ekart",
+    "xpressbees": "xpressbees",
+    "amazon": "amazon-shipping"
+}
+
+def _get_slug_from_description(description: str) -> str:
+    """Extracts the exact API slug from a natural language carrier description."""
+    if not description:
+        return "auto"  # Fallback to rule-based routing if no description is provided
+
+    desc_lower = description.lower().strip()
+
+    # Direct lookup
+    if desc_lower in CARRIER_SLUG_MAP:
+        return CARRIER_SLUG_MAP[desc_lower]
+
+    # Partial match (e.g., if user says "ship via BlueDart express")
+    for key, slug in CARRIER_SLUG_MAP.items():
+        if key in desc_lower:
+            return slug
+
+    return "auto"  # Fallback if no match is found
+
+
+# CITY_STATE_MAP = {
+#     # Metro cities
+#     "chennai": "tamil nadu", "mumbai": "maharashtra", "bengaluru": "karnataka",
+#     "bangalore": "karnataka", "delhi": "delhi", "new delhi": "delhi",
+#     "kolkata": "west bengal", "hyderabad": "telangana", "pune": "maharashtra",
+#     "ahmedabad": "gujarat", "surat": "gujarat", "jaipur": "rajasthan",
+#     "lucknow": "uttar pradesh", "kanpur": "uttar pradesh", "nagpur": "maharashtra",
+#     "indore": "madhya pradesh", "thane": "maharashra", "bhopal": "madhya pradesh",
+#     "visakhapatnam": "andhra pradesh", "pimpri-chinchwad": "maharashtra",
+#     "patna": "bihar", "vadodara": "gujarat", "ghaziabad": "uttar pradesh",
+#     "ludhiana": "punjab", "agra": "uttar pradesh", "nashik": "maharashtra",
+#     "faridabad": "haryana", "meerut": "uttar pradesh", "rajkot": "gujarat",
+#     "kalyan-dombivali": "maharashtra", "vasai-virar": "maharashtra",
+#     "varanasi": "uttar pradesh", "srinagar": "jammu and kashmir",
+#     "aurangabad": "maharashtra", "dhanbad": "jharkhand", "amritsar": "punjab",
+#     "navi mumbai": "maharashtra", "allahabad": "uttar pradesh",
+#     "prayagraj": "uttar pradesh", "howrah": "west bengal", "ranchi": "jharkhand",
+#     "gwalior": "madhya pradesh", "jabalpur": "madhya pradesh",
+#     "coimbatore": "tamil nadu", "vijayawada": "andhra pradesh", "jodhpur": "rajasthan",
+#     "madurai": "tamil nadu", "raipur": "chhattisgarh", "kota": "rajasthan",
+#     "chandigarh": "chandigarh", "guwahati": "assam", "solapur": "maharashtra",
+#     "hubballi-dharwad": "karnataka", "bareilly": "uttar pradesh", "moradabad": "uttar pradesh",
+#     "mysore": "karnataka", "mysuru": "karnataka", "gurgaon": "haryana",
+#     "gurugram": "haryana", "aligarh": "uttar pradesh", "jalandhar": "punjab",
+#     "tiruchirappalli": "tamil nadu", "bhubaneswar": "odisha", "salem": "tamil nadu",
+#     "warangal": "telangana", "guntur": "andhra pradesh", "bhiwandi": "maharashtra",
+#     "saharanpur": "uttar pradesh", "gorakhpur": "uttar pradesh", "bikaner": "rajasthan",
+#     "amravati": "maharashtra", "noida": "uttar pradesh", "jamshedpur": "jharkhand",
+#     "bhilai": "chhattisgarh", "cuttack": "odisha", "firozabad": "uttar pradesh",
+#     "kochi": "kerala", "cochin": "kerala", "nellore": "andhra pradesh",
+#     "bhavnagar": "gujarat", "dehradun": "uttarakhand", "durgapur": "west bengal",
+#     "asansol": "west bengal", "rourkela": "odisha", "nanded": "maharashtra",
+#     "kolhapur": "maharashtra", "ajmer": "rajasthan", "akola": "maharashtra",
+#     "gulbarga": "karnataka", "jamnagar": "gujarat", "ujjain": "madhya pradesh",
+#     "loni": "uttar pradesh", "siliguri": "west bengal", "jhansi": "uttar pradesh",
+#     "ulhasnagar": "maharashtra", "jammu": "jammu and kashmir", "sangli-miraj": "maharashtra",
+#     "mangalore": "karnataka", "erode": "tamil nadu", "belgaum": "karnataka",
+#     "belagavi": "karnataka", "ambattur": "tamil nadu", "tirunelveli": "tamil nadu",
+#     "malegaon": "maharashtra", "gaya": "bihar", "jalgaon": "maharashtra",
+#     "udaipur": "rajasthan", "maheshtala": "west bengal", "tiruppur": "tamil nadu",
+#     "davanagere": "karnataka", "kozhikode": "kerala", "calicut": "kerala",
+#     "akola": "maharashtra", "kurnool": "andhra pradesh", "rajpur sonarpur": "west bengal",
+#     "rajahmundry": "andhra pradesh", "bokaro": "jharkhand", "south dumdum": "west bengal",
+#     "bellary": "karnataka", "patiala": "punjab", "gopalpur": "west bengal",
+#     "agartala": "tripura", "bhagalpur": "bihar", "muzaffarnagar": "uttar pradesh",
+#     "bhatpara": "west bengal", "panihati": "west bengal", "latur": "maharashtra",
+#     "dhule": "maharashtra", "rohtak": "haryana", "korba": "chhattisgarh",
+#     "bhilwara": "rajasthan", "brahmapur": "odisha", "berhampur": "odisha",
+#     "muzaffarpur": "bihar", "ahmednagar": "maharashtra", "mathura": "uttar pradesh",
+#     "kollam": "kerala", "avadi": "tamil nadu", "kadapa": "andhra pradesh",
+#     "kamarhati": "west bengal", "sambalpur": "odisha", "bilaspur": "chhattisgarh",
+#     "shahjahanpur": "uttar pradesh", "satara": "maharashtra", "bijapur": "karnataka",
+#     "rampur": "uttar pradesh", "shivamogga": "karnataka", "shimoga": "karnataka",
+#     "chandrapur": "maharashtra", "junagadh": "gujarat", "thrissur": "kerala",
+#     "alwar": "rajasthan", "bardhaman": "west bengal", "kulti": "west bengal",
+#     "kakinada": "andhra pradesh", "nizamabad": "telangana", "parbhani": "maharashtra",
+#     "tumkur": "karnataka", "khammam": "telangana", "ozhukarai": "puducherry",
+#     "bihar sharif": "bihar", "panipat": "haryana", "darbhanga": "bihar",
+#     "bally": "west bengal", "aizawl": "mizoram", "dewas": "madhya pradesh",
+#     "ichalkaranji": "maharashtra", "karnal": "haryana", "bathinda": "punjab",
+#     "jalna": "maharashtra", "eluru": "andhra pradesh", "kirari suleman nagar": "delhi",
+#     "barasat": "west bengal", "purnia": "bihar", "satna": "madhya pradesh",
+#     "mira-bhayandar": "maharashtra", "karimnagar": "telangana", "etawah": "uttar pradesh",
+#     "bharatpur": "rajasthan", "begusarai": "bihar", "new delhi": "delhi",
+#     "chhapra": "bihar", "kadapa": "andhra pradesh", "ramagundam": "telangana",
+#     "pali": "rajasthan", "satna": "madhya pradesh", "vizianagaram": "andhra pradesh",
+#     "katihar": "bihar", "hardwar": "uttarakhand", "haridwar": "uttarakhand",
+#     "sonipat": "haryana", "nagercoil": "tamil nadu", "thanjavur": "tamil nadu",
+#     "murwara": "madhya pradesh", "naihati": "west bengal", "sambhal": "uttar pradesh",
+#     "nadiad": "gujarat", "yamunanagar": "haryana", "english bazar": "west bengal",
+#     "unnao": "uttar pradesh", "secunderabad": "telangana", "margao": "goa",
+#     "vasco da gama": "goa", "porbandar": "gujarat", "anand": "gujarat",
+#     "ratlam": "madhya pradesh", "morbi": "gujarat", "pondicherry": "puducherry",
+#     "puducherry": "puducherry", "gandhidham": "gujarat", "veraval": "gujarat",
+#     "madras": "tamil nadu", "bombay": "maharashtra", "calcutta": "west bengal",
+# }
+
+# # City aliases for normalization
+# CITY_ALIASES = {
+#     "bangalore": "bengaluru", "bombay": "mumbai", "calcutta": "kolkata",
+#     "madras": "chennai", "mysore": "mysuru", "cochin": "kochi",
+#     "calicut": "kozhikode", "trivandrum": "thiruvananthapuram",
+#     "poona": "pune", "baroda": "vadodara", "allahabad": "prayagraj",
+# }
+
+# # Parcel validation constants
+# MAX_WEIGHT_KG = 300
+# MAX_DIM_CM = 300
+# VOLUMETRIC_DIVISOR = 5000  # standard for most Indian carriers
+
+# # Address type keywords
+# RESIDENTIAL_KEYWORDS = {"home", "house", "flat", "apartment", "villa", "lane", "society"}
+# BUSINESS_KEYWORDS = {"pvt", "ltd", "llp", "inc", "corp", "technologies", "enterprises"}
+
+# def infer_state_from_city(city: str) -> str | None:
+#     """Try to infer state name from a given city using aliases and CITY_STATE_MAP.
+
+#     Returns normalized state string (as in CITY_STATE_MAP values) or None when
+#     inference is not possible.
+#     """
+#     if not city:
+#         return None
+
+#     # Normalize city name
+#     norm = city.strip().lower()
+#     # remove common punctuation
+#     for ch in [",", "."]:
+#         norm = norm.replace(ch, "")
+#     norm = " ".join(norm.split())
+
+#     # map aliases
+#     if norm in CITY_ALIASES:
+#         norm = CITY_ALIASES[norm]
+
+#     # direct lookup
+#     state = CITY_STATE_MAP.get(norm)
+#     if state:
+#         return state
+
+#     # try simple heuristics: remove spaces/dashes
+#     alt = norm.replace(" ", "-")
+#     state = CITY_STATE_MAP.get(alt)
+#     if state:
+#         return state
+
+#     alt2 = norm.replace("-", " ")
+#     state = CITY_STATE_MAP.get(alt2)
+#     if state:
+#         return state
+
+#     return None
+
+# def normalize_phone(phone: str) -> str | None:
+#     """Normalize Indian phone numbers to 10 digits."""
+#     if not phone:
+#         return None
+#     digits = re.sub(r"\D", "", phone)
+#     if digits.startswith("91") and len(digits) == 12:
+#         digits = digits[2:]
+#     if len(digits) != 10 or not digits[0] in "6789":
+#         return None  # Invalid Indian mobile number
+#     return digits
+
+
+# def validate_pincode(pincode: str) -> bool:
+#     """Validate Indian 6-digit pincode."""
+#     return bool(pincode and re.fullmatch(r"[1-9][0-9]{5}", pincode))
+
+
+# def validate_parcel_dimensions(weight: float, length: float, width: float, height: float) -> str | None:
+    
+#     if weight <= 0:
+#         return "Parcel weight must be greater than 0."
+#     if weight > MAX_WEIGHT_KG:
+#         return f"Parcel weight {weight}kg exceeds max allowed ({MAX_WEIGHT_KG}kg)."
+#     for name, val in [("length", length), ("width", width), ("height", height)]:
+#         if val < 0:
+#             return f"{name.capitalize()} cannot be negative."
+#         if val > MAX_DIM_CM:
+#             return f"{name.capitalize()} {val}cm exceeds max allowed ({MAX_DIM_CM}cm)."
+#     return None
+
+
+# def compute_chargeable_weight(actual_kg: float, l: float, w: float, h: float) -> float:
+#     """Returns the higher of actual vs volumetric weight."""
+#     volumetric_kg = (l * w * h) / VOLUMETRIC_DIVISOR
+#     return round(max(actual_kg, volumetric_kg), 2)
+
+
+# def infer_service_type(weight_kg: float, carrier_slug: str) -> str:
+#     """Rule-based service type selection."""
+#     """ this is experimental and should be verified for other carriers as well or removed"""
+#     if carrier_slug == "delhivery":
+#         return "delhivery-surface" if weight_kg > 10 else "delhivery"
+#     if weight_kg > 30:
+#         return "surface"
+#     return "express"
+
+
+# def infer_address_type(company: str, street: str) -> str:
+#     """Infer address type from company and street info."""
+#     text = (company + " " + street).lower()
+#     if any(k in text for k in BUSINESS_KEYWORDS):
+#         return "business"
+#     if any(k in text for k in RESIDENTIAL_KEYWORDS):
+#         return "residential"
+#     return "business" if company else "residential"
+
+
+# def normalize_date(date_str: str) -> str | None:
+#     """Try to normalize date to YYYY-MM-DD."""
+#     for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d", "%d %b %Y"):
+#         try:
+#             return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
+#         except ValueError:
+#             continue
+#     return None
 
 async def get_tracking_details(tracking_number: str) -> dict[str, Any] | None:
     headers = {
@@ -74,9 +306,19 @@ async def make_create_shipment_request(shipment_data: dict) -> dict[str, Any] | 
             )
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as e:
+            # This captures 4xx and 5xx errors specifically
+            error_details = e.response.text
+            print(f"API Error ({e.response.status_code}): {error_details}")
+            return {"error": error_details, "status_code": e.response.status_code}
+        except httpx.RequestError as e:
+            # This captures network issues (DNS, Timeout, etc.)
+            print(f"Network/Connection Error: {str(e)}")
+            return {"error": str(e), "type": "network_error"}
         except Exception as e:
-            print(f"Error in create shipment request: {str(e)}")
-            return None
+            # This catches anything else (like JSON parsing errors)
+            print(f"Unexpected Error: {str(e)}")
+            return {"error": str(e), "type": "unexpected_error"}
 
 
 async def make_docket_allocation_request(allocation_data: dict) -> dict[str, Any] | None:
@@ -96,6 +338,28 @@ async def make_docket_allocation_request(allocation_data: dict) -> dict[str, Any
             return response.json()
         except Exception as e:
             print(f"Error in docket allocation request: {str(e)}")
+            return None
+
+
+async def fetch_order_by_id(order_id: str) -> dict[str, Any] | None:
+    """Fetch a single order by order ID from the eShipz Orders API"""
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-TOKEN": ESHIPZ_TOKEN
+    }
+    # URL format: https://orders.eshipz.com/api/v1/orders/{order_id}
+    url = f"{ESHIPZ_API_ORDERS_URL}/{order_id}"
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(
+                url,
+                headers=headers,
+                timeout=30.0
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Error fetching order {order_id}: {str(e)}")
             return None
 
 
@@ -276,6 +540,17 @@ def _format_shipment_creation_response(data: dict) -> str:
     if not data:
         return "Failed to create shipment - No response from API"
     
+    # Check for error responses
+    if data.get("error"):
+        error_msg = data.get("error")
+        status_code = data.get("status_code", "")
+        error_type = data.get("type", "")
+        if status_code:
+            return f"Shipment creation failed: {error_msg} (Status: {status_code})"
+        elif error_type:
+            return f"Shipment creation failed: {error_msg} ({error_type})"
+        return f"Shipment creation failed: {error_msg}"
+    
     # Check meta for errors
     meta = data.get("meta", {})
     if meta.get("code") != 200:
@@ -413,9 +688,47 @@ def _format_docket_allocation_response(data: dict) -> str:
         return summary
     
     return str(data)
-
-
-
+'''
+async def lookup_pincode(pincode: str) -> dict[str, Any] | None:
+    """
+    Look up city, state, district from a 6-digit Indian pincode using India Post API.
+    
+    Returns:
+        {
+            "pincode": "600001",
+            "city": "Chennai",
+            "state": "Tamil Nadu",
+            "district": "Chennai",
+            "country": "IN"
+        }
+        or None if invalid/not found
+    """
+    if not pincode or len(pincode) != 6 or not pincode.isdigit():
+        return None
+    
+    url = f"https://api.postalpincode.in/pincode/{pincode}"
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, timeout=5.0)
+            data = response.json()
+            
+            if data and len(data) > 0 and data[0].get("Status") == "Success":
+                post_offices = data[0].get("PostOffice", [])
+                if post_offices and len(post_offices) > 0:
+                    office = post_offices[0]
+                    return {
+                        "pincode": pincode,
+                        "city": office.get("District", "").strip(),
+                        "state": office.get("State", "").strip(),
+                        "district": office.get("District", "").strip(),
+                        "country": "IN"
+                    }
+        except Exception as e:
+            print(f"Pincode lookup failed for {pincode}: {str(e)}")
+    
+    return None
+'''
 @mcp.tool()
 async def get_tracking(tracking_number: str) -> str:
     
@@ -510,71 +823,207 @@ async def allocate_docket(
 
 @mcp.tool()
 async def create_shipment(
-    carrier_slug: str,
-    service_type: str,
-    customer_reference: str,
+    carrier_description: str = "",            # LLM-provided natural language carrier description (e.g., "bluedart", "delhivery")
+    slug: str = "",                          # Direct carrier slug (if provided, overrides carrier_description)
+    service_type: str = "",                  # service type (e.g., "Apex", "express")
+    customer_reference: str = "",
+    description: str = "",                   # Shipment description
+    is_to_pay: bool = False,                # Is payment to be collected from recipient
     # Shipper details
-    ship_from_name: str,
-    ship_from_company: str,
-    ship_from_street1: str,
-    ship_from_city: str,
-    ship_from_state: str,
-    ship_from_pincode: str,
-    ship_from_phone: str,
-    ship_from_email: str,
-    # Consignee details
-    ship_to_name: str,
-    ship_to_company: str,
-    ship_to_street1: str,
-    ship_to_city: str,
-    ship_to_state: str,
-    ship_to_pincode: str,
-    ship_to_phone: str,
-    # Parcel details
-    parcel_description: str,
-    parcel_weight_kg: float,
-    parcel_length_cm: float,
-    parcel_width_cm: float,
-    parcel_height_cm: float,
-    # Item details
-    item_description: str,
-    item_quantity: int,
-    item_price: float,
-    # Optional fields
+    ship_from_name: str = "",
+    ship_from_company: str = "",
+    ship_from_street1: str = "",
     ship_from_street2: str = "",
+    ship_from_street3: str = "",
+    ship_from_city: str = "",
+    ship_from_state: str = "",
+    ship_from_pincode: str = "",
+    ship_from_phone: str = "",
+    ship_from_email: str = "",
+    ship_from_fax: str = "",
+    ship_from_alias_name: str = "",
+    ship_from_is_primary: bool = True,
+    # Consignee details
+    ship_to_name: str = "",
+    ship_to_company: str = "",
+    ship_to_street1: str = "",
     ship_to_street2: str = "",
+    ship_to_street3: str = "",
+    ship_to_city: str = "",
+    ship_to_state: str = "",
+    ship_to_pincode: str = "",
+    ship_to_phone: str = "",
     ship_to_email: str = "",
+    ship_to_fax: str = "",
+    ship_to_alias_name: str = "",
+    ship_to_is_primary: bool = True,
+    # Parcel details (JSON string for multiple parcels)
+    parcels_json: str = "",                 # JSON array of parcel objects
+    # Item details (JSON string for multiple items)
+    items_json: str = "",                   # JSON array of item objects
+    # Legacy single parcel/item support
+    parcel_description: str = "",
+    parcel_weight_kg: float = 0.0,
+    parcel_length_cm: float = 0.0,
+    parcel_width_cm: float = 0.0,
+    parcel_height_cm: float = 0.0,
+    item_description: str = "",
+    item_quantity: int = 1,
+    item_price: float = 0.0,
+    item_hsn_code: str = "",
+    item_sku: str = "",
+    # Additional fields
     is_cod: bool = False,
     cod_amount: float = 0.0,
     invoice_number: str = "",
     invoice_date: str = "",
     is_document: bool = False,
-    vendor_id: str = "",
     ship_from_gstin: str = "",
-    item_hsn_code: str = "",
-    item_sku: str = ""
+    gst_invoices_json: str = ""             # JSON array of GST invoice objects
 ) -> str:
     
-    # Build shipment data structure
+    # Determine actual slug: use provided slug, or extract from carrier_description, or fallback to "auto"
+    if slug:
+        actual_carrier_slug = slug.lower().strip()
+    else:
+        actual_carrier_slug = _get_slug_from_description(carrier_description)
+    
+    if ship_from_phone:
+        phone_digits_from = re.sub(r"\D", "", ship_from_phone)
+        if len(phone_digits_from) >= 10:
+            ship_from_phone = phone_digits_from[-10:]  # Take last 10 digits
+    
+    if ship_to_phone:
+        phone_digits_to = re.sub(r"\D", "", ship_to_phone)
+        if len(phone_digits_to) >= 10:
+            ship_to_phone = phone_digits_to[-10:]  # Take last 10 digits
+
+    # Simple address type logic - based on company name presence
+    ship_from_type = "business" if ship_from_company else "residential"
+    ship_to_type = "business" if ship_to_company else "residential"
+
+    # Parse JSON arrays if provided, otherwise use legacy single item/parcel support
+    parcels_list = []
+    items_list = []
+    gst_invoices_list = []
+    
+    # Parse parcels from JSON or use legacy single parcel
+    if parcels_json:
+        try:
+            parcels_list = json.loads(parcels_json)
+        except json.JSONDecodeError:
+            return f"Invalid JSON format for parcels_json: {parcels_json}"
+    elif parcel_weight_kg > 0:
+        # Legacy: create parcel from individual fields
+        parcels_list = [{
+            "description": parcel_description,
+            "box_type": "custom",
+            "quantity": 1,
+            "weight": {
+                "value": parcel_weight_kg,
+                "unit": "kg"
+            },
+            "dimension": {
+                "width": parcel_width_cm,
+                "height": parcel_height_cm,
+                "length": parcel_length_cm,
+                "unit": "cm"
+            }
+        }]
+    
+    # Parse items from JSON or use legacy single item
+    if items_json:
+        try:
+            items_list = json.loads(items_json)
+        except json.JSONDecodeError:
+            return f"Invalid JSON format for items_json: {items_json}"
+    elif item_description:
+        # Legacy: create item from individual fields
+        items_list = [{
+            "description": item_description,
+            "origin_country": "IN",
+            "sku": item_sku,
+            "hs_code": item_hsn_code,
+            "variant": "",
+            "quantity": item_quantity,
+            "price": {
+                "amount": item_price,
+                "currency": "INR"
+            },
+            "weight": {
+                "value": 0,
+                "unit": "kg"
+            }
+        }]
+    
+    # Add items to parcels if items exist
+    if items_list and parcels_list:
+        for parcel in parcels_list:
+            if "items" not in parcel:
+                parcel["items"] = items_list
+    elif items_list and not parcels_list:
+        # Create default parcel if only items provided
+        parcels_list = [{
+            "description": parcel_description or "Default",
+            "box_type": "custom",
+            "quantity": 1,
+            "weight": {
+                "value": parcel_weight_kg or 0.5,
+                "unit": "kg"
+            },
+            "dimension": {
+                "width": parcel_width_cm or 10,
+                "height": parcel_height_cm or 10,
+                "length": parcel_length_cm or 10,
+                "unit": "cm"
+            },
+            "items": items_list
+        }]
+    
+    # Parse GST invoices from JSON or use legacy single invoice
+    if gst_invoices_json:
+        try:
+            gst_invoices_list = json.loads(gst_invoices_json)
+        except json.JSONDecodeError:
+            return f"Invalid JSON format for gst_invoices_json: {gst_invoices_json}"
+    elif invoice_number and invoice_date:
+        # Legacy: create single invoice from individual fields
+        total_value = item_price * item_quantity
+        gst_invoices_list = [{
+            "invoice_number": invoice_number,
+            "invoice_date": invoice_date,
+            "invoice_value": total_value,
+            "ewaybill_number": ""
+        }]
+
+    # Build shipment data structure matching eShipz API format
     shipment_data = {
         "billing": {
             "paid_by": "shipper"
         },
-        "slug": None,
-        "service_type": None,
-        "customer_reference": customer_reference,
+        "vendor_id": None,
+        "description": description or parcel_description or carrier_description or actual_carrier_slug.upper(),
+        "slug": actual_carrier_slug,
         "purpose": "commercial",
-        "order_source": "mcp_api",
+        "order_source": "manual",
         "parcel_contents": parcel_description,
         "is_document": is_document,
+        "service_type": service_type or None,
+        "rate": {
+            "amount": 0,
+            "currency": "INR"
+        },
+        "charged_weight": {
+            "unit": "KG",
+            "value": parcel_weight_kg
+        },
+        "customer_reference": customer_reference,
+        "invoice_number": invoice_number,
+        "invoice_date": invoice_date,
         "is_cod": is_cod,
         "collect_on_delivery": {
             "amount": cod_amount if is_cod else 0,
             "currency": "INR"
-        },
-        "charged_weight": {
-            "unit": "kg",
-            "value": parcel_weight_kg
         },
         "shipment": {
             "ship_from": {
@@ -582,106 +1031,61 @@ async def create_shipment(
                 "company_name": ship_from_company,
                 "street1": ship_from_street1,
                 "street2": ship_from_street2,
+                "street3": ship_from_street3,
                 "city": ship_from_city,
                 "state": ship_from_state,
                 "postal_code": ship_from_pincode,
+                "country": "IN",
+                "type": ship_from_type,
                 "phone": ship_from_phone,
                 "email": ship_from_email,
-                "country": "IN",
-                "type": "business" if ship_from_company else "residential"
+                "fax": ship_from_fax,
+                "tax_id": ship_from_gstin,
+                "alias_name": ship_from_alias_name,
+                "is_primary": ship_from_is_primary
             },
             "ship_to": {
                 "contact_name": ship_to_name,
                 "company_name": ship_to_company,
                 "street1": ship_to_street1,
                 "street2": ship_to_street2,
+                "street3": ship_to_street3,
                 "city": ship_to_city,
                 "state": ship_to_state,
                 "postal_code": ship_to_pincode,
+                "country": "IN",
+                "type": ship_to_type,
                 "phone": ship_to_phone,
                 "email": ship_to_email if ship_to_email else ship_from_email,
-                "country": "IN",
-                "type": "business" if ship_to_company else "residential"
+                "fax": ship_to_fax,
+                "tax_id": "",
+                "alias_name": ship_to_alias_name,
+                "is_primary": ship_to_is_primary
             },
             "return_to": {
                 "contact_name": ship_from_name,
                 "company_name": ship_from_company,
                 "street1": ship_from_street1,
                 "street2": ship_from_street2,
+                "street3": ship_from_street3,
                 "city": ship_from_city,
                 "state": ship_from_state,
                 "postal_code": ship_from_pincode,
+                "country": "IN",
+                "type": ship_from_type,
                 "phone": ship_from_phone,
                 "email": ship_from_email,
-                "country": "IN",
-                "type": "business" if ship_from_company else "residential"
+                "fax": ship_from_fax,
+                "tax_id": ship_from_gstin,
+                "alias_name": ship_from_alias_name,
+                "is_primary": ship_from_is_primary
             },
             "is_reverse": False,
-            "is_to_pay": False,
-            "parcels": [
-                {
-                    "description": parcel_description,
-                    "box_type": "custom",
-                    "quantity": 1,
-                    "weight": {
-                        "value": parcel_weight_kg,
-                        "unit": "kg"
-                    },
-                    "dimension": {
-                        "width": parcel_width_cm,
-                        "height": parcel_height_cm,
-                        "length": parcel_length_cm,
-                        "unit": "cm"
-                    },
-                    "items": [
-                        {
-                            "description": item_description,
-                            "origin_country": "IN",
-                            "sku": item_sku,
-                            "hs_code": item_hsn_code,
-                            "quantity": item_quantity,
-                            "price": {
-                                "amount": item_price,
-                                "currency": "INR"
-                            },
-                            "weight": {
-                                "value": parcel_weight_kg,
-                                "unit": "kg"
-                            }
-                        }
-                    ]
-                }
-            ]
+            "is_to_pay": is_to_pay,
+            "parcels": parcels_list if parcels_list else []
         },
-        "gst_invoices": []
+        "gst_invoices": gst_invoices_list
     }
-    
-    # Add optional fields
-    if vendor_id:
-        shipment_data["vendor_id"] = vendor_id
-    
-    if invoice_number:
-        shipment_data["invoice_number"] = invoice_number
-    
-    if invoice_date:
-        shipment_data["invoice_date"] = invoice_date
-    
-    if ship_from_gstin:
-        shipment_data["shipment"]["ship_from"]["tax_id"] = ship_from_gstin
-        shipment_data["shipment"]["return_to"]["tax_id"] = ship_from_gstin
-    
-    # Add GST invoice if details provided
-    if invoice_number and invoice_date:
-        total_value = item_price * item_quantity
-        shipment_data["gst_invoices"] = [
-            {
-                "invoice_number": invoice_number,
-                "invoice_date": invoice_date,
-                "invoice_value": total_value,
-                "ewaybill_number": "",
-                "ewaybill_date": ""
-            }
-        ]
     
     data = await make_create_shipment_request(shipment_data)
     
@@ -694,6 +1098,235 @@ async def create_shipment(
     
     except Exception as e: 
         return f"Error processing shipment creation: {str(e)}"
+
+
+@mcp.tool()
+async def fetch_and_create_shipment(
+    order_id: str,
+    # Optional carrier and service type
+    carrier_description: str = "",
+    service_type: str = "",
+    # Optional shipper details override (if shipper_address in order is empty/incomplete)
+    ship_from_name: str = "",
+    ship_from_company: str = "",
+    ship_from_street1: str = "",
+    ship_from_street2: str = "",
+    ship_from_city: str = "",
+    ship_from_state: str = "",
+    ship_from_pincode: str = "",
+    ship_from_phone: str = "",
+    ship_from_email: str = "",
+    ship_from_gstin: str = ""
+) -> str:
+    """
+    Fetch an order by order_id from eShipz Orders API and create a shipment using the order data.
+    
+    This tool:
+    1. Fetches the order details from the Orders API
+    2. Extracts receiver address, items, parcels, and invoice data from the order
+    3. Uses provided shipper details (or from order if available)
+    4. Creates a shipment by calling the create_shipment API
+    
+    Args:
+        order_id: The order ID to fetch (e.g., "INV/25-26/656776")
+        carrier_description: Natural language carrier description (e.g., "bluedart", "delhivery")
+        service_type: Service type for shipment
+        ship_from_*: Shipper details (required if shipper_address in order is empty)
+    
+    Returns:
+        Success message with shipment details or error message
+    """
+    
+    # Step 1: Fetch order from Orders API
+    order_data = await fetch_order_by_id(order_id)
+    
+    if not order_data:
+        return f"Failed to fetch order {order_id}. Please verify the order ID and try again."
+    
+    # Check if the response is successful
+    if order_data.get("status") != 200:
+        remark = order_data.get("remark", "Unknown error")
+        return f"Failed to fetch order {order_id}: {remark}"
+    
+    # Extract order details
+    orders = order_data.get("orders", [])
+    if not orders or len(orders) == 0:
+        return f"No order found with ID {order_id}"
+    
+    order = orders[0]
+    
+    # Step 2: Extract data from order
+    receiver_address = order.get("receiver_address", {})
+    shipper_address = order.get("shipper_address", {})
+    items = order.get("items", [])
+    parcels = order.get("parcels", [])
+    gst_invoices = order.get("gst_invoices", [])
+    
+    # Determine COD
+    is_cod = order.get("is_cod", False)
+    cod_amount = float(order.get("cod_amount", 0))
+    
+    # Extract invoice details
+    invoice_number = order.get("invoice_number", "")
+    invoice_date = ""
+    invoice_value = 0.0
+    
+    if gst_invoices and len(gst_invoices) > 0:
+        gst_invoice = gst_invoices[0]
+        invoice_number = invoice_number or gst_invoice.get("invoice_number", "")
+        invoice_date = gst_invoice.get("invoice_date", "")
+        invoice_value = gst_invoice.get("invoice_value", 0.0)
+    
+    # Extract receiver (ship_to) details
+    ship_to_name = f"{receiver_address.get('first_name', '')} {receiver_address.get('last_name', '')}".strip()
+    ship_to_company = receiver_address.get("company_name", "")
+    ship_to_street1 = receiver_address.get("address", "")
+    ship_to_city = receiver_address.get("city", "")
+    ship_to_state = receiver_address.get("state", "")
+    ship_to_pincode = receiver_address.get("zipcode", "")
+    ship_to_phone = receiver_address.get("phone", "")
+    ship_to_email = receiver_address.get("email", "")
+    ship_to_gstin = receiver_address.get("gst_number", "")
+    
+    # Extract shipper (ship_from) details - use provided values or order values
+    if not ship_from_name and shipper_address.get("first_name"):
+        ship_from_name = f"{shipper_address.get('first_name', '')} {shipper_address.get('last_name', '')}".strip()
+    
+    if not ship_from_company and shipper_address.get("company_name"):
+        ship_from_company = shipper_address.get("company_name", "")
+    
+    if not ship_from_street1 and shipper_address.get("address"):
+        ship_from_street1 = shipper_address.get("address", "")
+    
+    if not ship_from_city and shipper_address.get("city"):
+        ship_from_city = shipper_address.get("city", "")
+    
+    if not ship_from_state and shipper_address.get("state"):
+        ship_from_state = shipper_address.get("state", "")
+    
+    if not ship_from_pincode and shipper_address.get("zipcode"):
+        ship_from_pincode = shipper_address.get("zipcode", "")
+    
+    if not ship_from_phone and shipper_address.get("phone"):
+        ship_from_phone = shipper_address.get("phone", "")
+    
+    if not ship_from_email and shipper_address.get("email"):
+        ship_from_email = shipper_address.get("email", "")
+    
+    if not ship_from_gstin and shipper_address.get("gst_number"):
+        ship_from_gstin = shipper_address.get("gst_number", "")
+    
+    # Extract item details (use first item if multiple)
+    item_description = ""
+    item_quantity = 1
+    item_price = 0.0
+    item_sku = ""
+    item_hsn_code = ""
+    
+    if items and len(items) > 0:
+        first_item = items[0]
+        item_description = first_item.get("description", "")
+        item_quantity = int(first_item.get("quantity", 1))
+        item_value = first_item.get("value", {})
+        item_price = float(item_value.get("amount", 0))
+        item_sku = first_item.get("sku", "")
+        item_hsn_code = first_item.get("hs_code", "")
+    
+    # Extract parcel details (use first parcel if multiple)
+    parcel_weight_kg = 0.0
+    parcel_length_cm = 0.0
+    parcel_width_cm = 0.0
+    parcel_height_cm = 0.0
+    parcel_description = item_description  # Use item description as parcel description
+    
+    if parcels and len(parcels) > 0:
+        first_parcel = parcels[0]
+        weight_data = first_parcel.get("weight", {})
+        parcel_weight_kg = float(weight_data.get("value", 0) or 0)
+        
+        # Convert weight to kg if needed
+        weight_unit = weight_data.get("unit_of_measurement", "KG").upper()
+        if weight_unit == "G" or weight_unit == "GRAM":
+            parcel_weight_kg = parcel_weight_kg / 1000
+        
+        dimensions = first_parcel.get("dimensions", {})
+        parcel_length_cm = float(dimensions.get("length", 0) or 0)
+        parcel_width_cm = float(dimensions.get("width", 0) or 0)
+        parcel_height_cm = float(dimensions.get("height", 0) or 0)
+        
+        # Convert dimensions to cm if needed
+        dim_unit = dimensions.get("unit_of_measurement", "CM").upper()
+        if dim_unit == "M" or dim_unit == "METER":
+            parcel_length_cm = parcel_length_cm * 100
+            parcel_width_cm = parcel_width_cm * 100
+            parcel_height_cm = parcel_height_cm * 100
+    
+    # Check if required fields are missing
+    missing_fields = []
+    
+    if not ship_to_name:
+        missing_fields.append("receiver name")
+    if not ship_to_pincode:
+        missing_fields.append("receiver pincode")
+    if not ship_to_phone:
+        missing_fields.append("receiver phone")
+    if not ship_from_name:
+        missing_fields.append("shipper name (ship_from_name parameter)")
+    if not ship_from_pincode:
+        missing_fields.append("shipper pincode (ship_from_pincode parameter)")
+    if not ship_from_phone:
+        missing_fields.append("shipper phone (ship_from_phone parameter)")
+    if parcel_weight_kg <= 0:
+        missing_fields.append("parcel weight")
+    
+    if missing_fields:
+        return f"Cannot create shipment. Missing required fields: {', '.join(missing_fields)}"
+    
+    # Step 3: Create shipment using the create_shipment tool
+    result = await create_shipment(
+        carrier_description=carrier_description,
+        service_type=service_type,
+        customer_reference=order_id,
+        # Shipper details
+        ship_from_name=ship_from_name,
+        ship_from_company=ship_from_company,
+        ship_from_street1=ship_from_street1,
+        ship_from_street2=ship_from_street2,
+        ship_from_city=ship_from_city,
+        ship_from_state=ship_from_state,
+        ship_from_pincode=ship_from_pincode,
+        ship_from_phone=ship_from_phone,
+        ship_from_email=ship_from_email,
+        ship_from_gstin=ship_from_gstin,
+        # Receiver details
+        ship_to_name=ship_to_name,
+        ship_to_company=ship_to_company,
+        ship_to_street1=ship_to_street1,
+        ship_to_city=ship_to_city,
+        ship_to_state=ship_to_state,
+        ship_to_pincode=ship_to_pincode,
+        ship_to_phone=ship_to_phone,
+        ship_to_email=ship_to_email,
+        # Parcel details
+        parcel_description=parcel_description,
+        parcel_weight_kg=parcel_weight_kg,
+        parcel_length_cm=parcel_length_cm,
+        parcel_width_cm=parcel_width_cm,
+        parcel_height_cm=parcel_height_cm,
+        # Item details
+        item_description=item_description,
+        item_quantity=item_quantity,
+        item_price=item_price,
+        item_sku=item_sku,
+        item_hsn_code=item_hsn_code,
+        # COD and invoice
+        is_cod=is_cod,
+        cod_amount=cod_amount,
+        invoice_number=invoice_number,
+        invoice_date=invoice_date
+    )
+    
+    return result
 
 
 if __name__ == "__main__":
